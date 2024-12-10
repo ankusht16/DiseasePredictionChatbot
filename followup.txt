@@ -1,0 +1,20 @@
+common cold
+Do you have a sore throat and congestion without itching, and symptoms which developed gradually over time?
+
+hay fever
+are you experiencing itchy eyes when exposed to allergens like dust, pollen etc or during certain seasons?
+
+Covid 19
+Do you have a dry cough or are you losing sense of taste?
+
+dehydration
+Have you not drank any water?
+
+Allergy
+Do your symptoms arise when exposed to dust, pollen, or pets?
+
+Influenza
+Did your symptoms develop suddenly with a fever and/or body aches?
+
+Dengue 
+do you have pain behind the eyes?
