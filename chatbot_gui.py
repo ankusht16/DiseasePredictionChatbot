@@ -2,140 +2,106 @@ import nltk
 from nltk.stem.lancaster import LancasterStemmer
 stemmer = LancasterStemmer()
 
-import pickle
 import numpy as np
-from keras.models import load_model
-model = load_model('chatbot_model.h5')
+import tensorflow as tf
+from sklearn.feature_extraction.text import TfidfVectorizer
+import tensorflow_model_optimization as tfmot
+import shap
 import json
-import random
+import pickle
 
-# Load intents JSON file
-intents_json = json.loads(open('intents2.json').read())
+# Load the dataset
+with open("intents2.json") as file:
+    data = json.load(file)
 
-# Load words and labels
-words = pickle.load(open('words.pkl','rb'))
-labels = pickle.load(open('labels.pkl','rb'))
+# Preprocess data
+words = []
+labels = []
+docs_x = []
+docs_y = []
 
-def clean_up_sentence(sentence):
-    # tokenize the pattern - split words into array
-    sentence_words = nltk.word_tokenize(sentence)
-    # stem each word - create short form for word
-    sentence_words = [stemmer.stem(word.lower()) for word in sentence_words]
-    return sentence_words
+for intent in data["intents"]:
+    for pattern in intent["patterns"]:
+        wrds = nltk.word_tokenize(pattern)
+        words.extend(wrds)
+        docs_x.append(pattern)
+        docs_y.append(intent["tag"])
 
-# return bag of words array: 0 or 1 for each word in the bag that exists in the sentence
-def bow(sentence, words, show_details=True):
-    # tokenize the pattern
-    sentence_words = clean_up_sentence(sentence)
-    # bag of words - matrix of N words, vocabulary matrix
-    bag = [0]*len(words) 
-    for s in sentence_words:
-        for i,w in enumerate(words):
-            if w == s: 
-                # assign 1 if current word is in the vocabulary position
-                bag[i] = 1
-                if show_details:
-                    print ("found in bag: %s" % w)
-    return(np.array(bag))
+    if intent["tag"] not in labels:
+        labels.append(intent["tag"])
 
-def predict_class(sentence, model):
-    # filter out predictions below a threshold
-    p = bow(sentence, words,show_details=False)
-    res = model.predict(np.array([p]))[0]
-    ERROR_THRESHOLD = 0.25
-    results = [[i,r] for i,r in enumerate(res) if r>ERROR_THRESHOLD]
-    # sort by strength of probability
-    results.sort(key=lambda x: x[1], reverse=True)
-    return_list = []
-    for r in results:
-        return_list.append({"intent": labels[r[0]], "probability": str(r[1])})
-    print(return_list)
-    return return_list
+# Sorting labels
+labels = sorted(labels)
 
-# Getting chatbot response
-def getResponse(intents, intents_json):
-    if not intents:
-        default_response = "I'm sorry, I didn't understand that. Can you please rephrase?"
-        return {"response": default_response, "precautions": [], "treatments": []}
-    
-    tag = intents[0]['intent']
-    list_of_intents = intents_json['intents']
-    
-    for i in list_of_intents:
-        if i['tag'] == tag:
-            result = {
-                "response": random.choice(i['responses']),
-                "precautions": i.get('precautions', []),
-                "treatments": i.get('treatments', []),
-            }
-            break
-    return result
-def chatbot_response(text):
-    # Predict intent
-    intents = predict_class(text, model)
-    
-    # Get response information
-    response_info = getResponse(intents, intents_json)
-    
-    # Display the main response in the chat log
-    main_response = "Bot: " + response_info['response'] + '\n'
-    ChatLog.insert(END, main_response)
-    
-    # If the response is the default one
-    if response_info['response'] == "I'm sorry, I didn't understand that. Can you please rephrase?":
-        ChatLog.insert(END, "Bot: You can try asking a different question.\n\n")
-    else:
-        # Display precautions and treatments
-        precautions_text = " " + ', '.join(response_info.get('precautions', [])) + '\n'
-        treatments_text = " " + ', '.join(response_info.get('treatments', [])) + '\n\n'
-        ChatLog.insert(END, precautions_text)
-        ChatLog.insert(END, treatments_text)
-    
-    return response_info
-# Creating GUI with tkinter
-import tkinter
-from tkinter import *
+# Saving labels into a pickle file
+pickle.dump(labels, open('labels.pkl', 'wb'))
 
-def send():
-    msg = EntryBox.get("1.0",'end-1c').strip()
-    EntryBox.delete("0.0",END)
+# TF-IDF vectorization
+tfidf = TfidfVectorizer(max_features=5000)
+training = tfidf.fit_transform(docs_x).toarray()  # Sparse matrix for optimization
+pickle.dump(tfidf, open('tfidf.pkl', 'wb'))  # Save TF-IDF model
 
-    if msg != '':
-        ChatLog.config(state=NORMAL)
-        ChatLog.insert(END, "You: " + msg + '\n\n')
-        ChatLog.config(foreground="#442265", font=("Verdana", 12 ))
+# Create output labels
+output = []
+for doc in docs_y:
+    output_row = [0] * len(labels)
+    output_row[labels.index(doc)] = 1
+    output.append(output_row)
 
-        # Get chatbot response
-        res = chatbot_response(msg)
+output = np.array(output)
 
-        ChatLog.config(state=DISABLED)
-        ChatLog.yview(END)
+# Compact neural network architecture
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.regularizers import l2
 
-base = Tk()
-base.title("bot")
-base.geometry("400x500")
-base.resizable(width=FALSE, height=FALSE)
+model = Sequential()
+model.add(Dense(64, input_shape=(training.shape[1],), activation='relu', kernel_regularizer=l2(0.01)))
+model.add(Dropout(0.3))
+model.add(Dense(32, activation='relu', kernel_regularizer=l2(0.01)))
+model.add(Dropout(0.3))
+model.add(Dense(len(labels), activation='softmax'))
 
-# Create Chat window
-ChatLog = Text(base, bd=0, bg="white", height="8", width="50", font="Arial")
-ChatLog.config(state=DISABLED)
+# Apply pruning
+pruning_params = {
+    'pruning_schedule': tfmot.sparsity.keras.PolynomialDecay(
+        initial_sparsity=0.2,  # Start by pruning 20% of weights
+        final_sparsity=0.8,    # Prune up to 80% of weights
+        begin_step=2000,       # Start pruning after 2000 steps
+        end_step=10000         # Finish pruning at 10000 steps
+    )
+}
 
-# Bind scrollbar to Chat window
-scrollbar = Scrollbar(base, command=ChatLog.yview, cursor="heart")
-ChatLog['yscrollcommand'] = scrollbar.set
+pruned_model = tfmot.sparsity.keras.prune_low_magnitude(model, **pruning_params)
 
-# Create Button to send message
-SendButton = Button(base, font=("Verdana",12,'bold'), text="Send", width="12", height=5,
-                    bd=0, bg="#32de97", activebackground="#3c9d9b",fg='#ffffff',
-                    command=send)
+# Compile the pruned model
+pruned_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
-# Create the box to enter message
-EntryBox = Text(base, bd=0, bg="white",width="29", height="5", font="Arial")
+# Train the pruned model
+callbacks = [
+    tfmot.sparsity.keras.UpdatePruningStep(),
+    tfmot.sparsity.keras.PruningSummaries(log_dir='./pruning_logs')
+]
 
-# Place all components on the screen
-scrollbar.place(x=376,y=6, height=386)
-ChatLog.place(x=6,y=6, height=386, width=370)
-EntryBox.place(x=128, y=401, height=90, width=265)
-SendButton.place(x=6, y=401, height=90)
+history = pruned_model.fit(training, output, epochs=50, batch_size=32, verbose=1, callbacks=callbacks)
 
-base.mainloop()
+# Strip pruning wrappers for deployment
+pruned_model_stripped = tfmot.sparsity.keras.strip_pruning(pruned_model)
+
+# Save the pruned model
+pruned_model_stripped.save("pruned_model.h5")
+
+# Quantize the pruned model for efficiency
+converter = tf.lite.TFLiteConverter.from_keras_model(pruned_model_stripped)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+tflite_model = converter.convert()
+
+with open('pruned_model.tflite', 'wb') as f:
+    f.write(tflite_model)
+
+# SHAP explainability
+explainer = shap.KernelExplainer(pruned_model_stripped.predict, training[:100])  # Use a small subset for explanation
+shap_values = explainer.shap_values(training[:5])  # Explain the first 5 samples
+shap.summary_plot(shap_values, training[:5], feature_names=tfidf.get_feature_names_out())
+
+print("Model training, pruning, and quantization complete!")
