@@ -62,11 +62,11 @@ model.add(Dense(32, activation='relu', kernel_regularizer=l2(0.01)))
 model.add(Dropout(0.3))
 model.add(Dense(len(labels), activation='softmax'))
 
-# Apply pruning
+# Apply pruning with reduced final sparsity
 pruning_params = {
     'pruning_schedule': tfmot.sparsity.keras.PolynomialDecay(
-        initial_sparsity=0.2,  # Start by pruning 20% of weights
-        final_sparsity=0.8,    # Prune up to 80% of weights
+        initial_sparsity=0.2,  # Start with 20% sparsity
+        final_sparsity=0.6,    # Reduce to 60% sparsity
         begin_step=2000,       # Start pruning after 2000 steps
         end_step=10000         # Finish pruning at 10000 steps
     )
